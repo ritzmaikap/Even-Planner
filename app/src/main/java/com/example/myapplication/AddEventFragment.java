@@ -33,13 +33,12 @@ public class AddEventFragment extends Fragment {
     String selectedTime = "";
 
     AppDatabase db;
-
-    // this stores the id of the event being edited
-    // if it remains -1, it means a new event is being added
     int editEventId = -1;
 
+    // this calendar stores the selected event date so it can be compared with today's date
+    Calendar selectedCalendar = null;
+
     public AddEventFragment() {
-        // empty public constructor required for fragment
     }
 
     @Nullable
@@ -66,7 +65,7 @@ public class AddEventFragment extends Fragment {
                 .allowMainThreadQueries()
                 .build();
 
-        // listening for edit request sent from event list fragment
+        // receiving old event data when user clicks edit from event list
         getParentFragmentManager().setFragmentResultListener(
                 "edit_event_request",
                 getViewLifecycleOwner(),
@@ -83,6 +82,20 @@ public class AddEventFragment extends Fragment {
                     categoryInput.setText(category);
                     locationInput.setText(location);
 
+                    // rebuilding calendar object from the old date string
+                    if (!selectedDate.isEmpty()) {
+                        String[] parts = selectedDate.split("/");
+                        if (parts.length == 3) {
+                            int day = Integer.parseInt(parts[0]);
+                            int month = Integer.parseInt(parts[1]) - 1;
+                            int year = Integer.parseInt(parts[2]);
+
+                            selectedCalendar = Calendar.getInstance();
+                            selectedCalendar.set(year, month, day, 0, 0, 0);
+                            selectedCalendar.set(Calendar.MILLISECOND, 0);
+                        }
+                    }
+
                     if (!selectedDate.isEmpty() && !selectedTime.isEmpty()) {
                         updateDateTimeText();
                     } else {
@@ -93,7 +106,7 @@ public class AddEventFragment extends Fragment {
                 }
         );
 
-        // opening date picker dialog
+        // date picker
         pickDateBtn.setOnClickListener(v -> {
             Calendar calendar = Calendar.getInstance();
 
@@ -101,6 +114,12 @@ public class AddEventFragment extends Fragment {
                     requireContext(),
                     (datePicker, year, month, day) -> {
                         selectedDate = day + "/" + (month + 1) + "/" + year;
+
+                        // storing selected date in calendar for later past-date validation
+                        selectedCalendar = Calendar.getInstance();
+                        selectedCalendar.set(year, month, day, 0, 0, 0);
+                        selectedCalendar.set(Calendar.MILLISECOND, 0);
+
                         updateDateTimeText();
                     },
                     calendar.get(Calendar.YEAR),
@@ -111,7 +130,7 @@ public class AddEventFragment extends Fragment {
             datePickerDialog.show();
         });
 
-        // opening keyboard-based material time picker
+        // keyboard based time picker
         pickTimeBtn.setOnClickListener(v -> {
             MaterialTimePicker picker =
                     new MaterialTimePicker.Builder()
@@ -133,38 +152,49 @@ public class AddEventFragment extends Fragment {
             });
         });
 
-        // adding a new event or updating an existing one
         addBtn.setOnClickListener(v -> {
             String title = titleInput.getText().toString().trim();
             String category = categoryInput.getText().toString().trim();
             String location = locationInput.getText().toString().trim();
 
-            if (title.isEmpty() || category.isEmpty() || location.isEmpty()
-                    || selectedDate.isEmpty() || selectedTime.isEmpty()) {
+            // input validation for title
+            if (title.isEmpty()) {
+                Toast.makeText(requireContext(), "title cannot be empty", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            // input validation for date
+            if (selectedDate.isEmpty()) {
+                Toast.makeText(requireContext(), "date cannot be empty", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            // optional extra check to keep the whole form safe
+            if (category.isEmpty() || location.isEmpty() || selectedTime.isEmpty()) {
                 Toast.makeText(requireContext(), "fill all fields", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            // logic validation to block past dates only for new events
+            if (editEventId == -1 && isPastDate()) {
+                Toast.makeText(requireContext(), "past dates are not allowed for new events", Toast.LENGTH_SHORT).show();
                 return;
             }
 
             Event event = new Event(title, category, location, selectedDate, selectedTime);
 
-            // if editEventId is -1, this is a new event
             if (editEventId == -1) {
                 db.eventDao().insert(event);
-                Toast.makeText(requireContext(), "event added", Toast.LENGTH_SHORT).show();
-
-                // keeping user on add event page after insert
+                Toast.makeText(requireContext(), "event added successfully", Toast.LENGTH_SHORT).show();
                 clearFields();
             } else {
-                // if editEventId has a real id, update that row
                 event.setId(editEventId);
                 db.eventDao().update(event);
-                Toast.makeText(requireContext(), "event updated", Toast.LENGTH_SHORT).show();
-
+                Toast.makeText(requireContext(), "event updated successfully", Toast.LENGTH_SHORT).show();
                 clearFields();
 
-                // after update, returning user to event list page
-//                NavController navController = Navigation.findNavController(v);
-//                navController.navigate(R.id.eventListFragment);
+                NavController navController = Navigation.findNavController(v);
+                navController.navigate(R.id.eventListFragment);
             }
         });
     }
@@ -173,12 +203,29 @@ public class AddEventFragment extends Fragment {
         dateTimeText.setText(selectedDate + " " + selectedTime);
     }
 
+    // this method compares the selected date with today's date
+    // it ignores time and checks date only
+    private boolean isPastDate() {
+        if (selectedCalendar == null) {
+            return false;
+        }
+
+        Calendar today = Calendar.getInstance();
+        today.set(Calendar.HOUR_OF_DAY, 0);
+        today.set(Calendar.MINUTE, 0);
+        today.set(Calendar.SECOND, 0);
+        today.set(Calendar.MILLISECOND, 0);
+
+        return selectedCalendar.before(today);
+    }
+
     private void clearFields() {
         titleInput.setText("");
         categoryInput.setText("");
         locationInput.setText("");
         selectedDate = "";
         selectedTime = "";
+        selectedCalendar = null;
         editEventId = -1;
         dateTimeText.setText("Select Date and Time");
         addBtn.setText("Add Event");
