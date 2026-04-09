@@ -3,13 +3,13 @@ package com.example.myapplication;
 import android.app.DatePickerDialog;
 import com.google.android.material.timepicker.MaterialTimePicker;
 import com.google.android.material.timepicker.TimeFormat;
-import android.app.TimePickerDialog;
 import android.os.Bundle;
 import android.view.*;
 import android.widget.*;
 
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.room.Room;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -24,8 +24,8 @@ public class MainActivity extends AppCompatActivity {
     Button addBtn, pickDateBtn, pickTimeBtn;
     ListView eventList;
 
-    // temporary storage for events (in-memory list)
-    ArrayList<String> events;
+    // this list is still used by the adapter, but now it temporarily holds Event objects loaded from room
+    ArrayList<Event> events;
 
     // adapter to display events in ListView
     EventAdapter adapter;
@@ -35,6 +35,13 @@ public class MainActivity extends AppCompatActivity {
 
     // keeps track of selected item index for updating
     int selectedPosition = -1;
+
+    // this stores the currently selected event object during edit mode
+    // it helps identify which database row should be updated when the user edits an event
+    Event selectedEvent = null;
+
+    // this is the room database reference used to perform insert, update, delete, and fetch operations
+    AppDatabase db;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -58,12 +65,24 @@ public class MainActivity extends AppCompatActivity {
         pickTimeBtn = findViewById(R.id.pickTimeBtn);
         eventList = findViewById(R.id.eventList);
 
+        // creating the room database object
+        // "event_database" is the local database file name that will be stored on the device
+        // allowMainThreadQueries is used here to keep the assignment easier to understand and implement
+        db = Room.databaseBuilder(getApplicationContext(),
+                        AppDatabase.class, "event_database")
+                .allowMainThreadQueries()
+                .build();
+
         // initializing event storage list
         events = new ArrayList<>();
 
         // setting up custom adapter for ListView
         adapter = new EventAdapter();
         eventList.setAdapter(adapter);
+
+        // loading previously saved events from room when the app opens
+        // this makes the saved data appear again even after closing and reopening the app
+        loadEvents();
 
         // date picker dialog to select event date
         pickDateBtn.setOnClickListener(v -> {
@@ -101,19 +120,37 @@ public class MainActivity extends AppCompatActivity {
         // handling add and update functionality using same button
         addBtn.setOnClickListener(v -> {
 
-            String event = getEventText();
+            Event event = getEventObject();
 
-            if (!event.isEmpty()) {
+            if (event != null) {
 
                 // if no item is selected, create new event
                 if (selectedPosition == -1) {
-                    events.add(event);
+                    // inserting the new event into room so that it remains saved permanently
+                    db.eventDao().insert(event);
                 }
                 // if item is selected, update existing event
                 else {
-                    events.set(selectedPosition, event);
+                    // copying the edited field values into the selected existing event object
+                    // this keeps the same database row id and only changes the edited content
+                    selectedEvent.setTitle(event.getTitle());
+                    selectedEvent.setCategory(event.getCategory());
+                    selectedEvent.setLocation(event.getLocation());
+                    selectedEvent.setDate(event.getDate());
+                    selectedEvent.setTime(event.getTime());
+
+                    // updating the edited event inside room database
+                    db.eventDao().update(selectedEvent);
+
                     selectedPosition = -1;
+
+                    // clearing the selected event reference because update mode is finished
+                    selectedEvent = null;
                 }
+
+                // reading all latest data again from room after insert or update
+                // this refreshes the list so the screen shows the newest saved data
+                loadEvents();
 
                 // refresh ListView after data change
                 adapter.notifyDataSetChanged();
@@ -129,8 +166,9 @@ public class MainActivity extends AppCompatActivity {
         dateTimeText.setText(selectedDate + " " + selectedTime);
     }
 
-    // collects input data and validates fields
-    private String getEventText() {
+    // this method creates an Event object instead of a single formatted string
+    // room needs an object so it can store each field in separate database columns
+    private Event getEventObject() {
 
         String title = titleInput.getText().toString();
         String category = categoryInput.getText().toString();
@@ -141,11 +179,19 @@ public class MainActivity extends AppCompatActivity {
                 || selectedDate.isEmpty() || selectedTime.isEmpty()) {
 
             Toast.makeText(this, "Fill all fields", Toast.LENGTH_SHORT).show();
-            return "";
+            return null;
         }
 
-        // formatting event as a single string
-        return title + "\n" + category + "\n" + location + "\n" + selectedDate + " " + selectedTime;
+        // creating and returning a proper Event object with all the entered values
+        return new Event(title, category, location, selectedDate, selectedTime);
+    }
+
+    // this method fetches all events from the room database
+    // the adapter list is cleared and filled again so the latest saved database data is shown
+    private void loadEvents() {
+        List<Event> savedEvents = db.eventDao().getAllEvents();
+        events.clear();
+        events.addAll(savedEvents);
     }
 
     // clears input fields and resets date/time
@@ -157,6 +203,9 @@ public class MainActivity extends AppCompatActivity {
 
         selectedDate = "";
         selectedTime = "";
+
+        // clearing this reference ensures the next button press behaves like a fresh add operation
+        selectedEvent = null;
     }
 
     // custom adapter for displaying events in ListView
@@ -174,7 +223,8 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public long getItemId(int i) {
-            return i;
+            // returning the real database id makes each row correspond to its stored room record
+            return events.get(i).getId();
         }
 
         @Override
@@ -187,23 +237,33 @@ public class MainActivity extends AppCompatActivity {
             Button update = view.findViewById(R.id.updateBtn);
             Button delete = view.findViewById(R.id.deleteBtn);
 
+            // converting the Event object into the same multi-line text format used in the list row
+            // this keeps the display style similar to the original version of the app
+            Event event = events.get(i);
+            String eventText = event.getTitle() + "\n"
+                    + event.getCategory() + "\n"
+                    + event.getLocation() + "\n"
+                    + event.getDate() + " " + event.getTime();
+
             // setting event details to textview
-            text.setText(events.get(i));
+            text.setText(eventText);
 
             // edit button loads selected event into input fields
             update.setOnClickListener(v -> {
 
                 selectedPosition = i;
 
-                String[] parts = events.get(i).split("\n");
+                // storing the selected object so the correct database row can be updated later
+                selectedEvent = events.get(i);
 
-                titleInput.setText(parts[0]);
-                categoryInput.setText(parts[1]);
-                locationInput.setText(parts[2]);
+                // filling the input fields directly from the selected event object fields
+                // this avoids splitting a text string and is more reliable for database-backed data
+                titleInput.setText(selectedEvent.getTitle());
+                categoryInput.setText(selectedEvent.getCategory());
+                locationInput.setText(selectedEvent.getLocation());
 
-                String[] dt = parts[3].split(" ");
-                selectedDate = dt[0];
-                selectedTime = dt[1];
+                selectedDate = selectedEvent.getDate();
+                selectedTime = selectedEvent.getTime();
 
                 updateDateTime();
 
@@ -212,7 +272,12 @@ public class MainActivity extends AppCompatActivity {
 
             // delete button removes selected event
             delete.setOnClickListener(v -> {
-                events.remove(i);
+                // deleting the selected event from room removes it permanently from local storage
+                db.eventDao().delete(events.get(i));
+
+                // loading the fresh remaining data again after deletion
+                loadEvents();
+
                 notifyDataSetChanged();
                 Toast.makeText(MainActivity.this, "Deleted", Toast.LENGTH_SHORT).show();
             });
